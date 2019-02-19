@@ -108,6 +108,7 @@ WITH_POWERPC ?= $(findstring powerpc, $(LLVM_COMPONENTS))
 WITH_PTX ?= $(findstring nvptx, $(LLVM_COMPONENTS))
 # AMDGPU target is WIP
 WITH_AMDGPU ?= $(findstring amdgpu, $(LLVM_COMPONENTS))
+WITH_WEBASSEMBLY ?= $(findstring webassembly, $(LLVM_COMPONENTS))
 WITH_OPENCL ?= not-empty
 WITH_METAL ?= not-empty
 WITH_OPENGL ?= not-empty
@@ -135,6 +136,9 @@ MIPS_LLVM_CONFIG_LIB=$(if $(WITH_MIPS), mips, )
 
 POWERPC_CXX_FLAGS=$(if $(WITH_POWERPC), -DWITH_POWERPC=1, )
 POWERPC_LLVM_CONFIG_LIB=$(if $(WITH_POWERPC), powerpc, )
+
+WEBASSEMBLY_CXX_FLAGS=$(if $(WITH_WEBASSEMBLY), -DWITH_WEBASSEMBLY=1, )
+WEBASSEMBLY_LLVM_CONFIG_LIB=$(if $(WITH_WEBASSEMBLY), webassembly, )
 
 PTX_CXX_FLAGS=$(if $(WITH_PTX), -DWITH_PTX=1, )
 PTX_LLVM_CONFIG_LIB=$(if $(WITH_PTX), nvptx, )
@@ -191,6 +195,7 @@ CXX_FLAGS += $(OPENGL_CXX_FLAGS)
 CXX_FLAGS += $(D3D12_CXX_FLAGS)
 CXX_FLAGS += $(MIPS_CXX_FLAGS)
 CXX_FLAGS += $(POWERPC_CXX_FLAGS)
+CXX_FLAGS += $(WEBASSEMBLY_CXX_FLAGS)
 CXX_FLAGS += $(INTROSPECTION_CXX_FLAGS)
 CXX_FLAGS += $(EXCEPTIONS_CXX_FLAGS)
 CXX_FLAGS += $(AMDGPU_CXX_FLAGS)
@@ -203,7 +208,25 @@ CXX_FLAGS += -funwind-tables
 print-%:
 	@echo '$*=$($*)'
 
-LLVM_STATIC_LIBS = -L $(LLVM_LIBDIR) $(shell $(LLVM_CONFIG) --link-static --libfiles bitwriter bitreader linker ipo mcjit $(X86_LLVM_CONFIG_LIB) $(ARM_LLVM_CONFIG_LIB) $(OPENCL_LLVM_CONFIG_LIB) $(METAL_LLVM_CONFIG_LIB) $(PTX_LLVM_CONFIG_LIB) $(AARCH64_LLVM_CONFIG_LIB) $(MIPS_LLVM_CONFIG_LIB) $(POWERPC_LLVM_CONFIG_LIB) $(HEXAGON_LLVM_CONFIG_LIB) $(AMDGPU_LLVM_CONFIG_LIB))
+LLVM_STATIC_LIBFILES = \
+	bitwriter \
+	bitreader \
+	linker \
+	ipo \
+	mcjit \
+	$(X86_LLVM_CONFIG_LIB) \
+	$(ARM_LLVM_CONFIG_LIB) \
+	$(OPENCL_LLVM_CONFIG_LIB) \
+	$(METAL_LLVM_CONFIG_LIB) \
+	$(PTX_LLVM_CONFIG_LIB) \
+	$(AARCH64_LLVM_CONFIG_LIB) \
+	$(MIPS_LLVM_CONFIG_LIB) \
+	$(POWERPC_LLVM_CONFIG_LIB) \
+	$(HEXAGON_LLVM_CONFIG_LIB) \
+	$(AMDGPU_LLVM_CONFIG_LIB) \
+	$(WEBASSEMBLY_LLVM_CONFIG_LIB)
+
+LLVM_STATIC_LIBS = -L $(LLVM_LIBDIR) $(shell $(LLVM_CONFIG) --link-static --libfiles $(LLVM_STATIC_LIBFILES))
 
 # Add a rpath to the llvm used for linking, in case multiple llvms are
 # installed. Bakes a path on the build system into the .so, so don't
@@ -390,6 +413,7 @@ SOURCE_FILES = \
   CodeGen_Posix.cpp \
   CodeGen_PowerPC.cpp \
   CodeGen_PTX_Dev.cpp \
+  CodeGen_WebAssembly.cpp \
   CodeGen_X86.cpp \
   CPlusPlusMangle.cpp \
   CSE.cpp \
@@ -551,6 +575,7 @@ HEADER_FILES = \
   CodeGen_Posix.h \
   CodeGen_PowerPC.h \
   CodeGen_PTX_Dev.h \
+  CodeGen_WebAssembly.h \
   CodeGen_X86.h \
   ConciseCasts.h \
   CPlusPlusMangle.h \

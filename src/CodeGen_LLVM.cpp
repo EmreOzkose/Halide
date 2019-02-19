@@ -12,6 +12,7 @@
 #include "CodeGen_LLVM.h"
 #include "CodeGen_MIPS.h"
 #include "CodeGen_PowerPC.h"
+#include "CodeGen_WebAssembly.h"
 #include "CodeGen_X86.h"
 #include "Debug.h"
 #include "Deinterleave.h"
@@ -130,6 +131,12 @@ using std::vector;
 #define InitializeHexagonTarget()       InitializeTarget(Hexagon)
 #define InitializeHexagonAsmParser()    InitializeAsmParser(Hexagon)
 #define InitializeHexagonAsmPrinter()   InitializeAsmPrinter(Hexagon)
+#endif
+
+#ifdef WITH_WEBASSEMBLY
+#define InitializeWebAssemblyTarget()       InitializeTarget(WebAssembly)
+#define InitializeWebAssemblyAsmParser()    InitializeAsmParser(WebAssembly)
+#define InitializeWebAssemblyAsmPrinter()   InitializeAsmPrinter(WebAssembly)
 #endif
 
 namespace {
@@ -310,7 +317,11 @@ CodeGen_LLVM *CodeGen_LLVM::new_for_target(const Target &target,
             return make_codegen<CodeGen_GPU_Host<CodeGen_PowerPC>>(target, context);
         }
 #endif
-
+#ifdef WITH_WEBASSEMBLY
+        if (target.arch == Target::WebAssembly) {
+            return make_codegen<CodeGen_GPU_Host<CodeGen_WebAssembly>>(target, context);
+        }
+#endif
         user_error << "Invalid target architecture for GPU backend: "
                    << target.to_string() << "\n";
         return nullptr;
@@ -325,6 +336,8 @@ CodeGen_LLVM *CodeGen_LLVM::new_for_target(const Target &target,
         return make_codegen<CodeGen_PowerPC>(target, context);
     } else if (target.arch == Target::Hexagon) {
         return make_codegen<CodeGen_Hexagon>(target, context);
+    } else if (target.arch == Target::WebAssembly) {
+        return make_codegen<CodeGen_WebAssembly>(target, context);
     }
 
     user_error << "Unknown target architecture: "
@@ -457,6 +470,7 @@ bool CodeGen_LLVM::llvm_NVPTX_enabled = false;
 bool CodeGen_LLVM::llvm_Mips_enabled = false;
 bool CodeGen_LLVM::llvm_PowerPC_enabled = false;
 bool CodeGen_LLVM::llvm_AMDGPU_enabled = false;
+bool CodeGen_LLVM::llvm_WebAssembly_enabled = false;
 
 namespace {
 
