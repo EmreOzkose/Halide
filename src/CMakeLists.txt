@@ -84,6 +84,7 @@ set(RUNTIME_CPP
   runtime_api
   ssp
   to_string
+  trace_helper
   tracing
   windows_abort
   windows_clock
@@ -104,7 +105,7 @@ set (RUNTIME_LL
   arm
   arm_no_neon
   hvx_64
-  hvx
+  hvx_128
   mips
   posix_math
   powerpc
