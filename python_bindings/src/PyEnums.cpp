@@ -72,7 +72,9 @@ void define_enums(py::module &m) {
         .value("Android", Target::OS::Android)
         .value("IOS", Target::OS::IOS)
         .value("QuRT", Target::OS::QuRT)
-        .value("NoOS", Target::OS::NoOS);
+        .value("NoOS", Target::OS::NoOS)
+        .value("EmscriptenThreadlessRT", Target::OS::EmscriptenThreadlessRT);
+        .value("EmscriptenThreadedRT", Target::OS::EmscriptenThreadedRT);
 
     py::enum_<Target::Arch>(m, "TargetArch")
         .value("ArchUnknown", Target::Arch::ArchUnknown)

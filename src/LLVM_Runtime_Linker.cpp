@@ -1,5 +1,6 @@
 #include "LLVM_Runtime_Linker.h"
 #include "LLVM_Headers.h"
+// #include "LLVM_Output.h"
 
 namespace Halide {
 
@@ -437,10 +438,21 @@ llvm::Triple get_triple_for_target(const Target &target) {
 
 namespace {
 
+void convert_weak_to_strong(llvm::GlobalValue &gv) {
+    llvm::GlobalValue::LinkageTypes linkage = gv.getLinkage();
+    if (linkage == llvm::GlobalValue::WeakAnyLinkage) {
+        gv.setLinkage(llvm::GlobalValue::LinkOnceAnyLinkage);
+    } else if (linkage == llvm::GlobalValue::WeakODRLinkage) {
+        gv.setLinkage(llvm::GlobalValue::LinkOnceODRLinkage);
+    } else if (linkage == llvm::GlobalValue::ExternalWeakLinkage) {
+        gv.setLinkage(llvm::GlobalValue::ExternalLinkage);
+    }
+}
+
 // Link all modules together and with the result in modules[0], all
 // other input modules are destroyed. Sets the datalayout and target
 // triple appropriately for the target.
-void link_modules(std::vector<std::unique_ptr<llvm::Module>> &modules, Target t) {
+void link_modules(std::vector<std::unique_ptr<llvm::Module>> &modules, Target t, bool make_weak_symbols_strong = false) {
 
     llvm::DataLayout data_layout = get_data_layout_for_target(t);
     llvm::Triple triple = Internal::get_triple_for_target(t);
@@ -485,12 +497,7 @@ void link_modules(std::vector<std::unique_ptr<llvm::Module>> &modules, Target t)
     // Enumerate the global variables.
     for (auto &gv : modules[0]->globals()) {
         // No variables are part of the public interface (even the ones labelled halide_)
-        llvm::GlobalValue::LinkageTypes linkage = gv.getLinkage();
-        if (linkage == llvm::GlobalValue::WeakAnyLinkage) {
-            gv.setLinkage(llvm::GlobalValue::LinkOnceAnyLinkage);
-        } else if (linkage == llvm::GlobalValue::WeakODRLinkage) {
-            gv.setLinkage(llvm::GlobalValue::LinkOnceODRLinkage);
-        }
+        convert_weak_to_strong(gv);
     }
 
     // Enumerate the functions.
@@ -507,13 +514,8 @@ void link_modules(std::vector<std::unique_ptr<llvm::Module>> &modules, Target t)
             << " for function " << (std::string)f.getName() << "\n";
         can_strip = can_strip && !is_halide_extern_c_sym;
 
-        llvm::GlobalValue::LinkageTypes linkage = f.getLinkage();
-        if (can_strip) {
-            if (linkage == llvm::GlobalValue::WeakAnyLinkage) {
-                f.setLinkage(llvm::GlobalValue::LinkOnceAnyLinkage);
-            } else if (linkage == llvm::GlobalValue::WeakODRLinkage) {
-                f.setLinkage(llvm::GlobalValue::LinkOnceODRLinkage);
-            }
+        if (can_strip || make_weak_symbols_strong) {
+            convert_weak_to_strong(f);
         }
     }
 
@@ -620,6 +622,39 @@ void add_underscores_to_posix_calls_on_windows(llvm::Module *m) {
     }
 }
 
+std::unique_ptr<llvm::Module> get_wasm_jit_module(const Target &t, llvm::LLVMContext *c) {
+    bool bits_64 = (t.bits == 64);
+    bool debug = t.has_feature(Target::Debug);
+
+    vector<std::unique_ptr<llvm::Module>> modules;
+    modules.push_back(get_initmod_fake_thread_pool(c, bits_64, debug));
+   // modules.push_back(get_initmod_fake_get_symbol(c, bits_64, debug));
+    modules.push_back(get_initmod_posix_allocator(c, bits_64, debug));
+    // modules.push_back(get_initmod_posix_clock(c, bits_64, debug));
+    // modules.push_back(get_initmod_linux_yield(c, bits_64, debug));
+    modules.push_back(get_initmod_buffer_t(c, bits_64, debug));
+    modules.push_back(get_initmod_destructors(c, bits_64, debug));
+    //modules.push_back(get_initmod_pseudostack(c, bits_64, debug));
+    modules.push_back(get_initmod_posix_math_ll(c));
+    //modules.push_back(get_initmod_gpu_device_selection(c, bits_64, debug));
+    modules.push_back(get_initmod_tracing(c, bits_64, debug));
+    modules.push_back(get_initmod_write_debug_image(c, bits_64, debug));
+    modules.push_back(get_initmod_cache(c, bits_64, debug));
+    modules.push_back(get_initmod_to_string(c, bits_64, debug));
+    modules.push_back(get_initmod_alignment_32(c, bits_64, debug));
+    modules.push_back(get_initmod_device_interface(c, bits_64, debug));
+    modules.push_back(get_initmod_metadata(c, bits_64, debug));
+    modules.push_back(get_initmod_float16_t(c, bits_64, debug));
+    modules.push_back(get_initmod_errors(c, bits_64, debug));
+    modules.push_back(get_initmod_posix_abort(c, bits_64, debug));
+    modules.push_back(get_initmod_msan_stubs(c, bits_64, debug));
+
+    // We don't want anything marked as weak for the wasm-jit runtime
+    link_modules(modules, t, /*make_weak_symbols_strong*/ true);
+
+    return std::move(modules[0]);
+}
+
 /** Create an llvm module containing the support code for a given target. */
 std::unique_ptr<llvm::Module> get_initial_module_for_target(Target t, llvm::LLVMContext *c, bool for_shared_jit_runtime, bool just_gpu) {
     enum InitialModuleType {
@@ -675,6 +710,24 @@ std::unique_ptr<llvm::Module> get_initial_module_for_target(Target t, llvm::LLVM
                     modules.push_back(get_initmod_posix_threads(c, bits_64, debug));
                 }
                 modules.push_back(get_initmod_posix_get_symbol(c, bits_64, debug));
+            } else if (t.os == Target::EmscriptenThreadlessRT || t.os == Target::EmscriptenThreadedRT) {
+                modules.push_back(get_initmod_posix_allocator(c, bits_64, debug));
+                modules.push_back(get_initmod_posix_error_handler(c, bits_64, debug));
+                modules.push_back(get_initmod_posix_print(c, bits_64, debug));
+                modules.push_back(get_initmod_posix_clock(c, bits_64, debug));
+                modules.push_back(get_initmod_posix_io(c, bits_64, debug));
+                modules.push_back(get_initmod_linux_host_cpu_count(c, bits_64, debug));
+                modules.push_back(get_initmod_linux_yield(c, bits_64, debug));
+                if (t.os == Target::EmscriptenThreadlessRT) {
+                    modules.push_back(get_initmod_fake_thread_pool(c, bits_64, debug));
+                } else {
+                    if (tsan) {
+                        modules.push_back(get_initmod_posix_threads_tsan(c, bits_64, debug));
+                    } else {
+                        modules.push_back(get_initmod_posix_threads(c, bits_64, debug));
+                    }
+                }
+                modules.push_back(get_initmod_fake_get_symbol(c, bits_64, debug));
             } else if (t.os == Target::OSX) {
                 modules.push_back(get_initmod_posix_allocator(c, bits_64, debug));
                 modules.push_back(get_initmod_posix_error_handler(c, bits_64, debug));
@@ -887,6 +940,7 @@ std::unique_ptr<llvm::Module> get_initial_module_for_target(Target t, llvm::LLVM
                 modules.push_back(get_initmod_x86_avx2_ll(c));
             }
             if (t.has_feature(Target::Profile)) {
+                user_assert(t.os != Target::EmscriptenThreadlessRT) << "The profiler cannot be used in a threadless environment.";
                 modules.push_back(get_initmod_profiler_inlined(c, bits_64, debug));
             }
         }
