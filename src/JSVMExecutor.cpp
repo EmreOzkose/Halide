@@ -13,23 +13,20 @@
 #include <sstream>
 #include <vector>
 
-#define WASM_DEBUGGING 0
+// Debugging the WebAssembly JIT support is usually disconnected from the rest of HL_DEBUG_CODEGEN
+#define WASM_DEBUG_LEVEL 0
 
-#if WASM_DEBUGGING
-
-#define wdebug(x) debug(x)
-
+#if WASM_DEBUG_LEVEL
+    #define wdebug(x) debug(x)
 #else
+    struct wdebug {
+        wdebug(int verbosity) {}
 
-struct wdebug {
-    wdebug(int verbosity) {}
-
-    template<typename T>
-    wdebug &operator<<(T&& x) {
-        return *this;
-    }
-};
-
+        template<typename T>
+        wdebug &operator<<(T&& x) {
+            return *this;
+        }
+    };
 #endif
 
 namespace {
@@ -46,10 +43,10 @@ using JITExternMap = std::map<std::string, Halide::JITExtern>;
 
 #if WITH_JSVM_V8
 
-// Built and tested with v8 7.2.x
-
 #include "v8.h"
 #include "libplatform/libplatform.h"
+
+#define V8_API_VERSION ((V8_MAJOR_VERSION * 10) + V8_MINOR_VERSION)
 
 namespace Halide {
 namespace Internal {
@@ -59,12 +56,18 @@ namespace {
 // TODO is this accurate?
 static std::mutex v8_lock;
 
+// TODO: this is highly suboptimal; we should be able to build this once,
+// load it directly into V8, then dlopen subsequent instances; the LLVM wasm
+// doesn't yet support this, so for now, we explicitly regenerate and relink
+// each time.
 struct HalideRuntimeCache {
     Target target;
     llvm::SmallVector<char, 2> wasm;
+
+    static const HalideRuntimeCache &get(const Target &t_in);
 };
 
-const HalideRuntimeCache &get_halide_runtime_cache(const Target &t_in) {
+/*static*/ const HalideRuntimeCache &HalideRuntimeCache::get(const Target &t_in) {
     static std::unique_ptr<HalideRuntimeCache> halide_runtime_cache;
 
     const Target t = t_in.without_feature(Target::NoRuntime).without_feature(Target::JIT);
@@ -87,15 +90,13 @@ const HalideRuntimeCache &get_halide_runtime_cache(const Target &t_in) {
     return *halide_runtime_cache;
 }
 
-#define V8_API_VERSION ((V8_MAJOR_VERSION * 10) + V8_MINOR_VERSION)
-
 using namespace v8;
 
 using wasm32_ptr_t = int32_t;
 
 const wasm32_ptr_t kMagicJitUserContextValue = -1;
 
-// TODO: for debugging...
+#if WASM_DEBUG_LEVEL
 void print_object_properties(Isolate *isolate, const Local<Value> &v) {
     Local<Context> context = isolate->GetCurrentContext();
     String::Utf8Value objascii(isolate, v);
@@ -113,6 +114,7 @@ void print_object_properties(Isolate *isolate, const Local<Value> &v) {
         }
     }
 }
+#endif
 
 inline constexpr int halide_type_code(halide_type_code_t code, int bits) {
     return ((int) code) | (bits << 8);
@@ -283,24 +285,33 @@ enum EmbedderDataSlots {
     kString_grow,
 };
 
-wasm32_ptr_t align_up(wasm32_ptr_t p) {
-    constexpr int kAlignment = 32;
+template<typename T>
+inline T align_up(T p) {
+    constexpr T kAlignment = 32;
     return (p + kAlignment - 1) & ~(kAlignment - 1);
 }
 
 // TODO: real malloc here please
 wasm32_ptr_t v8_WasmMemoryObject_malloc(const Local<Context> &context, size_t size) {
     Isolate *isolate = context->GetIsolate();
+    int32_t heap_base = context->GetEmbedderData(kHeapBase)->Int32Value(context).ToChecked();
+    wdebug(0)<<"heap_base is: "<<heap_base<<"\n";
+
+
     Local<Object> memory_value = context->GetEmbedderData(kWasmMemoryObject).As<Object>();  // really a WasmMemoryObject
     Local<Object> buffer_string = context->GetEmbedderData(kString_buffer).As<Object>();
     Local<ArrayBuffer> wasm_memory = Local<ArrayBuffer>::Cast(memory_value->Get(buffer_string));
-    int32_t heap_base = context->GetEmbedderData(kHeapBase)->Int32Value(context).ToChecked();
-    int32_t next_available = context->GetEmbedderData(kNextAvailable)->Int32Value(context).ToChecked();
 
-    int32_t start = align_up(next_available);
-    int32_t end = start + size;
-    if (end > (int32_t) wasm_memory->ByteLength()) {
-        constexpr int32_t kWasmPageSize = 65536;
+    wdebug(0)<<"ArrayBuffer size is: "<<wasm_memory->ByteLength()<<"\n";
+
+    int64_t next_available = context->GetEmbedderData(kNextAvailable)->Int32Value(context).ToChecked();
+    wdebug(0)<<"next_available is: "<<next_available<<"\n";
+
+    int64_t start = align_up(next_available);
+    user_assert(start >= heap_base) << "Out of memory, sorry";
+    int64_t end = start + size;
+    if (end > (int64_t) wasm_memory->ByteLength()) {
+        constexpr int kWasmPageSize = 65536;
         const int32_t pages_needed = ((end - wasm_memory->ByteLength()) + kWasmPageSize - 1) / 65536;
         wdebug(0)<<"attempting to grow by pages: "<<pages_needed<<"\n";
 
@@ -310,11 +321,13 @@ wasm32_ptr_t v8_WasmMemoryObject_malloc(const Local<Context> &context, size_t si
             ->Get(context, context->GetEmbedderData(kString_grow)).ToLocalChecked().As<Object>()
             ->CallAsFunction(context, memory_value, 1, args).ToLocalChecked()->Int32Value(context).ToChecked();
         wdebug(0)<<"grow result: "<<result<<"\n";
+
+        wasm_memory = Local<ArrayBuffer>::Cast(memory_value->Get(buffer_string));
+        wdebug(0)<<"New ArrayBuffer size is: "<<wasm_memory->ByteLength()<<"\n";
+
     }
 
-    wdebug(0)<<"ArrayBuffer size is: "<<wasm_memory->ByteLength()<<"\n";
-    wdebug(0)<<"heap_base is: "<<heap_base<<"\n";
-
+    user_assert(end <= (int64_t) wasm_memory->ByteLength()) << "Out of memory, sorry";
     context->SetEmbedderData(kNextAvailable, Integer::New(isolate, end));
     wdebug(0)<<"allocation of "<<size<<" at: "<<start<<", next at "<<end<<"\n";
     return start;
@@ -348,7 +361,7 @@ struct wasm_halide_buffer_t {
 };
 
 void dump_hostbuf(const Local<Context> &context, const halide_buffer_t *buf, const std::string &label) {
-#if WASM_DEBUGGING
+#if WASM_DEBUG_LEVEL >= 2
     const halide_dimension_t *dim = buf->dim;
     const uint8_t *host = buf->host;
 
@@ -375,7 +388,7 @@ void dump_hostbuf(const Local<Context> &context, const halide_buffer_t *buf, con
 }
 
 void dump_wasmbuf(const Local<Context> &context, wasm32_ptr_t buf_ptr, const std::string &label) {
-#if WASM_DEBUGGING
+#if WASM_DEBUG_LEVEL >= 2
     internal_assert(buf_ptr);
 
     uint8_t *base = get_wasm_memory_base(context);
@@ -649,8 +662,7 @@ void wasm_jit_halide_trace_helper_callback(const v8::FunctionCallbackInfo<v8::Va
 
     JITUserContext *jit_user_context = get_jit_user_context(context, args[0]);
 
-    String::Utf8Value func_name(isolate, args[1]->ToObject(context).ToLocalChecked());
-
+    const wasm32_ptr_t func_name_ptr = args[1]->Int32Value(context).ToChecked();
     const wasm32_ptr_t value_ptr = args[2]->Int32Value(context).ToChecked();
     const wasm32_ptr_t coordinates_ptr = args[3]->Int32Value(context).ToChecked();
     const int type_code = args[4]->Int32Value(context).ToChecked();
@@ -660,15 +672,15 @@ void wasm_jit_halide_trace_helper_callback(const v8::FunctionCallbackInfo<v8::Va
     const int parent_id = args[8]->Int32Value(context).ToChecked();
     const int value_index = args[9]->Int32Value(context).ToChecked();
     const int dimensions = args[10]->Int32Value(context).ToChecked();
-    String::Utf8Value trace_tag(isolate, args[11]->ToObject(context).ToLocalChecked());
+    const wasm32_ptr_t trace_tag_ptr = args[11]->Int32Value(context).ToChecked();
 
     internal_assert(dimensions >= 0 && dimensions < 1024);  // not a hard limit, just a sanity check
 
     halide_trace_event_t event;
-    event.func = *func_name;
+    event.func = (const char *) (base + func_name_ptr);
     event.value = value_ptr ? ((void *)(base + value_ptr)) : nullptr;
     event.coordinates = coordinates_ptr ? ((int32_t *)(base + coordinates_ptr)) : nullptr;
-    event.trace_tag = *trace_tag;
+    event.trace_tag = (const char *) (base + trace_tag_ptr);
     event.type.code = (halide_type_code_t) type_code;
     event.type.bits = (uint8_t) type_bits;
     event.type.lanes = (uint16_t) type_lanes;
@@ -884,7 +896,6 @@ void v8_extern_wrapper(const v8::FunctionCallbackInfo<v8::Value>& args) {
             wasmbuf_to_hostbuf(context, buf_ptr, buffers[i]);
             trampoline_args[i] = buffers[i].raw_buffer();
         } else {
-//wdebug(0)<<"arg "<<i<<" of "<<arg_types_len<<" is "; print_object_properties(isolate, args[i]);
             dynamic_type_dispatch<ExtractAndStoreScalar>(arg_types[i].type, context, args[i], &scalars[i]);
             trampoline_args[i] = &scalars[i];
         }
@@ -987,16 +998,16 @@ std::vector<char> link_wasm(const Target &target, const void *source, size_t sou
     // TODO: surely there's a better way
     TemporaryFile fn_obj_file("", ".o");
     write_entire_file(fn_obj_file.pathname(), source, source_len);
-#if WASM_DEBUGGING
+#if WASM_DEBUG_LEVEL
     fn_obj_file.detach();
     wdebug(0) << "Dumping fn_obj_file to " << fn_obj_file.pathname() << "\n";
 #endif
 
     TemporaryFile runtime_obj_file("", ".o");
-    const auto &rt = get_halide_runtime_cache(target).wasm;
+    const auto &rt = HalideRuntimeCache::get(target).wasm;
     write_entire_file(runtime_obj_file.pathname(), &rt[0], rt.size());
 
-#if WASM_DEBUGGING
+#if WASM_DEBUG_LEVEL
     runtime_obj_file.detach();
     wdebug(0) << "Dumping runtime to " << runtime_obj_file.pathname() << "\n";
 #endif
@@ -1026,7 +1037,7 @@ std::vector<char> link_wasm(const Target &target, const void *source, size_t sou
         internal_error << "lld::wasm::link failed: (" << lld_errs.str() << ")\n";
     }
 
-#if WASM_DEBUGGING
+#if WASM_DEBUG_LEVEL
     wasm_output.detach();
     wdebug(0) << "Dumping linked wasm to " << wasm_output.pathname() << "\n";
 #endif
@@ -1103,19 +1114,18 @@ JSVMModuleContents::JSVMModuleContents(
         const char *flags[] = {
           // TODO: these need to match the flags we set in CodeGen_WebAssembly::mattrs()
           "--experimental_wasm_bulk_memory",
-          "--experimental_wasm_se",    // sign-ext
-          // "--experimental_wasm_simd",  // simd128?
+          "--experimental_wasm_se",    // +sign-ext
+          "--experimental_wasm_simd",  // +simd128
+          "--experimental-wasm-sat-f2i-conversions",  // +nontrapping-fptoint
 
           // For debugging purposes
           // "--print_all_exceptions=true",
-          "--abort_on_uncaught_exception",
+          // "--abort_on_uncaught_exception",
           //"--trace-ignition-codegen",
           //"--trace_wasm_decoder",
-          "--no-liftoff",
-          "--wasm-interpret-all",
-          "--wasm-num-compilation-tasks=1",
+          // "--no-liftoff",
+          // "--wasm-interpret-all",
           // "--trace-wasm-memory",
-          "--wasm-shared-engine",
         };
         for (size_t i = 0; i < sizeof(flags)/sizeof(flags[0]); i++) {
             V8::SetFlagsFromString(flags[i], strlen(flags[i]));
@@ -1336,7 +1346,6 @@ wdebug(0)<<"arg "<<i<<" "<<arg.name<<" is scalar "<<arg.type.bits()<<"\n";
     int r = result.ToLocalChecked()->Int32Value(context).ToChecked();
     if (r == 0) {
         // Update any output buffers
-        // TODO: for input args, copy only flags, etc
         for (size_t i = 0; i < args.size(); i++) {
             const Argument &arg = args[i].first;
             if (arg.is_buffer()) {

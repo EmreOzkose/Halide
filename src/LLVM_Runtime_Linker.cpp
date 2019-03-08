@@ -423,7 +423,6 @@ llvm::Triple get_triple_for_target(const Target &target) {
         if (target.bits == 32) {
             triple.setArch(llvm::Triple::wasm32);
         } else {
-            user_assert(target.bits == 64) << "Target bits must be 32 or 64\n";
             triple.setArch(llvm::Triple::wasm64);
         }
         triple.setObjectFormat(llvm::Triple::Wasm);
@@ -628,15 +627,10 @@ std::unique_ptr<llvm::Module> get_wasm_jit_module(const Target &t, llvm::LLVMCon
 
     vector<std::unique_ptr<llvm::Module>> modules;
     modules.push_back(get_initmod_fake_thread_pool(c, bits_64, debug));
-   // modules.push_back(get_initmod_fake_get_symbol(c, bits_64, debug));
     modules.push_back(get_initmod_posix_allocator(c, bits_64, debug));
-    // modules.push_back(get_initmod_posix_clock(c, bits_64, debug));
-    // modules.push_back(get_initmod_linux_yield(c, bits_64, debug));
     modules.push_back(get_initmod_buffer_t(c, bits_64, debug));
     modules.push_back(get_initmod_destructors(c, bits_64, debug));
-    //modules.push_back(get_initmod_pseudostack(c, bits_64, debug));
     modules.push_back(get_initmod_posix_math_ll(c));
-    //modules.push_back(get_initmod_gpu_device_selection(c, bits_64, debug));
     modules.push_back(get_initmod_tracing(c, bits_64, debug));
     modules.push_back(get_initmod_write_debug_image(c, bits_64, debug));
     modules.push_back(get_initmod_cache(c, bits_64, debug));

@@ -372,11 +372,11 @@ bool test_all(int vector_width, Target t) {
 }
 
 int main(int argc, char **argv) {
-    if (get_jit_target_from_environment().arch == Target::WebAssembly) {
-        // TODO: fixme
-        printf("TODO: broken, threading to stack space?.\n");
-        return 0;
-    }
+    // if (get_jit_target_from_environment().arch == Target::WebAssembly) {
+    //     // TODO: fixme
+    //     printf("TODO: broken, threading to stack space?.\n");
+    //     return 0;
+    // }
 
     Target target = get_jit_target_from_environment();
 

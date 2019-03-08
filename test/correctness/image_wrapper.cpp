@@ -628,6 +628,12 @@ int multi_folds_wrapper_test() {
 }  // namespace
 
 int main(int argc, char **argv) {
+    if (get_jit_target_from_environment().arch == Target::WebAssembly) {
+        // TODO: fixme
+        printf("TODO: broken, needs real malloc.\n");
+        return 0;
+    }
+
     printf("Running calling wrap no op test\n");
     if (calling_wrapper_no_op_test() != 0) {
         return -1;

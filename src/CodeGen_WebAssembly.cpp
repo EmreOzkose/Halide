@@ -23,16 +23,16 @@ string CodeGen_WebAssembly::mcpu() const {
 }
 
 string CodeGen_WebAssembly::mattrs() const {
-    // TODO: it's not clear if we *require* bulk_memory but
-    // it apparently goes hand in hand with enabling threads?
-
-    // TODO: we probably don't *require* sign-ext but our codegen
-    // is likely much more efficient with it.
-
     // TODO: do we want/need nontrapping-fptoint?
     // https://github.com/WebAssembly/nontrapping-float-to-int-conversions/blob/master/proposals/nontrapping-float-to-int-conversion/Overview.md
 
     string s = "+sign-ext";
+
+    // TODO: not ready to enable by default
+    // s += ",+bulk-memory";
+
+    // TODO: not ready to enable by default
+    // s += ",+simd128";
 
     if (target.os != Target::EmscriptenThreadlessRT) {
         // In theory, atomics and threads are separate features in wasm,
@@ -41,15 +41,11 @@ string CodeGen_WebAssembly::mattrs() const {
         s += ",+atomics";
     }
 
-
-    // craters compiling our runtime under current trunk
-    // s += ",+bulk-memory"
-
-    // s += ",+simd128";
-
-    // TODO: Emscripten doesn't seem to be able to validate wasm that contains this yet.
-    // Does it generate these? Is there a flag to control it?
-    // s += ",+nontrapping-fptoint";
+    // TODO: Emscripten doesn't seem to be able to validate wasm that contains this yet,
+    // so only generate for JIT mode, where we know we can enable it.
+    if (target.has_feature(Target::JIT)) {
+        s += ",+nontrapping-fptoint";
+    }
 
     return s;
 }
